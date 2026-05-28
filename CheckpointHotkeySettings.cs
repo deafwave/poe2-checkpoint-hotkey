@@ -7,5 +7,5 @@ namespace CheckpointHotkey;
 public class CheckpointHotkeySettings : ISettings
 {
     public ToggleNode Enable { get; set; } = new(true);
-    public HotkeyNode RespawnHotkey { get; set; } = new(Keys.F13);
+    public HotkeyNode RespawnHotkey { get; set; } = new(Keys.F4);
 }
