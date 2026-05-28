@@ -10,6 +10,12 @@ namespace CheckpointHotkey;
 
 public class CheckpointHotkey : BaseSettingsPlugin<CheckpointHotkeySettings>
 {
+    private const string LogPrefix = "[CheckpointHotkey]";
+    private const int MaxEscapeAttempts = 10;
+    private const int EscapeRetryDelayMs = 250;
+    private const int MaxHoverAttempts = 11;
+    private const int HoverPollDelayMs = 30;
+
     private Task _respawnTask;
     private CancellationTokenSource _areaCancellation = new();
 
@@ -42,7 +48,7 @@ public class CheckpointHotkey : BaseSettingsPlugin<CheckpointHotkeySettings>
 
         if (Settings.RespawnHotkey.PressedOnce())
         {
-            LogMessage("[CheckpointHotkey] Respawning at checkpoint...");
+            LogMessage($"{LogPrefix} Respawning at checkpoint...");
             _respawnTask = Task.Run(() => HandleRespawnAsync(_areaCancellation.Token));
         }
     }
@@ -51,38 +57,25 @@ public class CheckpointHotkey : BaseSettingsPlugin<CheckpointHotkeySettings>
     {
         try
         {
-            int escapeAttemptsRemaining = 10;
-            while (!GameController.Game.EscapeState.IsActive && escapeAttemptsRemaining-- > 0)
+            if (!await TryOpenEscapeMenuAsync(cancellationToken))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                Input.KeyPressRelease(Keys.Escape);
-                await Task.Delay(250, cancellationToken);
-            }
-
-            if (!GameController.Game.EscapeState.IsActive)
-            {
-                LogError("[CheckpointHotkey] Escape menu did not open after repeated attempts. Aborting.");
+                LogError($"{LogPrefix} Escape menu did not open after repeated attempts. Aborting.");
                 return;
             }
 
-            var respawnButton = GameController.Game.EscapeState.HoveredElement
-                .GetChildFromIndices(0, 0, 0, 6);
-
+            var respawnButton = ResolveRespawnButton();
             if (respawnButton == null)
             {
-                LogError("[CheckpointHotkey] Could not resolve the Respawn at Checkpoint button. The escape menu layout may have changed.");
+                LogError($"{LogPrefix} Could not resolve the Respawn at Checkpoint button. The escape menu layout may have changed.");
                 return;
             }
 
             await HoverAndClickAsync(respawnButton, cancellationToken);
 
-            var confirmButton = await WaitForElementAsync(
-                () => GameController.Game.EscapeState.HoveredElement.GetChildFromIndices(0, 4, 0, 0, 3, 0),
-                cancellationToken);
-
+            var confirmButton = await WaitForElementAsync(ResolveConfirmButton, cancellationToken);
             if (confirmButton == null)
             {
-                LogError("[CheckpointHotkey] Confirm dialog did not appear. The layout may have changed.");
+                LogError($"{LogPrefix} Confirm dialog did not appear. The layout may have changed.");
                 return;
             }
 
@@ -93,27 +86,45 @@ public class CheckpointHotkey : BaseSettingsPlugin<CheckpointHotkeySettings>
         }
         catch (Exception ex)
         {
-            LogError($"[CheckpointHotkey] Unexpected error in respawn sequence: {ex.Message}");
+            LogError($"{LogPrefix} Unexpected error in respawn sequence: {ex.Message}");
         }
     }
 
+    private async Task<bool> TryOpenEscapeMenuAsync(CancellationToken cancellationToken)
+    {
+        for (int attempt = 0; attempt < MaxEscapeAttempts; attempt++)
+        {
+            if (GameController.Game.EscapeState.IsActive)
+                return true;
+
+            cancellationToken.ThrowIfCancellationRequested();
+            Input.KeyPressRelease(Keys.Escape);
+            await Task.Delay(EscapeRetryDelayMs, cancellationToken);
+        }
+
+        return GameController.Game.EscapeState.IsActive;
+    }
+
+    private Element ResolveRespawnButton() =>
+        GameController.Game.EscapeState.HoveredElement?.GetChildFromIndices(0, 0, 0, 6);
+
+    private Element ResolveConfirmButton() =>
+        GameController.Game.EscapeState.HoveredElement?.GetChildFromIndices(0, 4, 0, 0, 3, 0);
+
     private async Task HoverAndClickAsync(Element element, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
         var windowTopLeft = GameController.Window.GetWindowRectangle().TopLeft;
 
-        int hoverAttemptsRemaining = 10;
-        do
+        for (int attempt = 0; attempt < MaxHoverAttempts; attempt++)
         {
-            hoverAttemptsRemaining--;
+            cancellationToken.ThrowIfCancellationRequested();
             Input.SetCursorPos(windowTopLeft + element.GetClientRect().Center);
 
             if (element.HasShinyHighlight)
                 break;
 
-            await Task.Delay(30, cancellationToken);
-        } while (!element.HasShinyHighlight && hoverAttemptsRemaining >= 0);
+            await Task.Delay(HoverPollDelayMs, cancellationToken);
+        }
 
         Input.Click(MouseButtons.Left);
     }
